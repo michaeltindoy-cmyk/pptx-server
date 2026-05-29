@@ -1,7 +1,3 @@
-/**
- * PPTX → PNG Conversion Server (No Firebase — returns base64 directly)
- */
-
 const express   = require("express");
 const multer    = require("multer");
 const cors      = require("cors");
@@ -30,46 +26,51 @@ app.post("/convert", upload.single("file"), async (req, res) => {
 
   try {
     fs.mkdirSync(tmpDir, { recursive: true });
-
     const pptxWork = path.join(tmpDir, "presentation.pptx");
     fs.copyFileSync(pptxPath, pptxWork);
 
     console.log(`[convert] Converting: ${req.file.originalname}`);
 
-    // Convert to PNG
+    // Step 1: Convert to PDF first (LibreOffice handles this reliably)
     await execAsync(
-      `libreoffice --headless --convert-to png --outdir "${tmpDir}" "${pptxWork}"`,
+      `libreoffice --headless --convert-to pdf --outdir "${tmpDir}" "${pptxWork}"`,
       { timeout: 120000 }
     );
 
-    // Log ALL files in tmpDir for debugging
-    const allFiles = fs.readdirSync(tmpDir);
-    console.log(`[convert] All files in tmpDir:`, allFiles);
+    const pdfPath = path.join(tmpDir, "presentation.pdf");
 
-    // Collect PNGs — exclude the source pptx
+    if (!fs.existsSync(pdfPath)) {
+      throw new Error("PDF conversion failed — LibreOffice did not produce a PDF.");
+    }
+
+    console.log(`[convert] PDF created, now converting to PNG per page...`);
+
+    // Step 2: Use pdftoppm to convert each PDF page to PNG
+    // pdftoppm is more reliable for multi-page conversion
+    await execAsync(
+      `pdftoppm -png -r 150 "${pdfPath}" "${path.join(tmpDir, "slide")}"`  ,
+      { timeout: 120000 }
+    );
+
+    // Collect all PNGs
+    const allFiles = fs.readdirSync(tmpDir);
+    console.log(`[convert] All files:`, allFiles);
+
     const pngFiles = allFiles
       .filter(f => f.toLowerCase().endsWith(".png"))
       .sort((a, b) => {
-        // Extract any number from filename for sorting
-        // Handles: presentation.png, presentation1.png, presentation2.png
-        // Also handles: presentation-1.png, slide1.png, etc.
-        const getNum = (name) => {
-          const m = name.match(/(\d+)/);
-          return m ? parseInt(m[1]) : 0;
-        };
+        const getNum = n => parseInt(n.match(/(\d+)/)?.[1] || "0");
         return getNum(a) - getNum(b);
       });
 
-    console.log(`[convert] PNG files found:`, pngFiles);
+    console.log(`[convert] PNG files:`, pngFiles);
 
     if (pngFiles.length === 0) {
-      throw new Error("No PNG slides generated. LibreOffice may have failed silently.");
+      throw new Error("No PNG slides generated.");
     }
 
-    // Convert each PNG to base64
     const slides = pngFiles.map((file, i) => {
-      const filePath = path.join(tmpDir, file);
-      const b64 = fs.readFileSync(filePath).toString("base64");
+      const b64 = fs.readFileSync(path.join(tmpDir, file)).toString("base64");
       return {
         id:       `slide_${Date.now()}_${i}`,
         index:    i,
@@ -80,7 +81,6 @@ app.post("/convert", upload.single("file"), async (req, res) => {
       };
     });
 
-    // Cleanup
     fs.rmSync(tmpDir, { recursive: true, force: true });
     fs.unlinkSync(pptxPath);
 

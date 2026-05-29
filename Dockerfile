@@ -2,7 +2,16 @@
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y libreoffice libreoffice-impress fonts-liberation fonts-dejavu fonts-noto --no-install-recommends && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    libreoffice \
+    libreoffice-impress \
+    poppler-utils \
+    fonts-liberation \
+    fonts-dejavu \
+    fonts-noto \
+    --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
