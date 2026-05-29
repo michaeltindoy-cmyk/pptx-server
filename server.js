@@ -1,8 +1,5 @@
 /**
  * PPTX → PNG Conversion Server (No Firebase — returns base64 directly)
- * Deploy on Render.com free tier
- *
- * POST /convert  →  receives .pptx, returns PNG slides as base64 data URLs
  */
 
 const express   = require("express");
@@ -21,55 +18,55 @@ const upload = multer({ dest: os.tmpdir() });
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// ── Health check ──────────────────────────────────────────────────────────────
 app.get("/health", (req, res) =>
   res.json({ status: "ok", time: new Date().toISOString() })
 );
 
-// ── Main conversion endpoint ──────────────────────────────────────────────────
-// POST /convert
-// Body: multipart/form-data { file: .pptx }
-// Returns: { slides: [{ id, index, title, imageUrl, notes, bodyText }] }
 app.post("/convert", upload.single("file"), async (req, res) => {
   const tmpDir   = path.join(os.tmpdir(), `pptx_${Date.now()}`);
   const pptxPath = req.file?.path;
 
-  if (!pptxPath) {
-    return res.status(400).json({ error: "No file uploaded" });
-  }
+  if (!pptxPath) return res.status(400).json({ error: "No file uploaded" });
 
   try {
-    // 1. Create temp working dir
     fs.mkdirSync(tmpDir, { recursive: true });
 
-    // 2. Copy uploaded file with .pptx extension
     const pptxWork = path.join(tmpDir, "presentation.pptx");
     fs.copyFileSync(pptxPath, pptxWork);
 
     console.log(`[convert] Converting: ${req.file.originalname}`);
 
-    // 3. LibreOffice: convert pptx → PNG (one PNG per slide)
+    // Convert to PNG
     await execAsync(
-      `libreoffice --headless --convert-to png --outdir ${tmpDir} ${pptxWork}`,
+      `libreoffice --headless --convert-to png --outdir "${tmpDir}" "${pptxWork}"`,
       { timeout: 120000 }
     );
 
-    // 4. Collect PNGs sorted by slide number
-    const pngFiles = fs.readdirSync(tmpDir)
-      .filter(f => f.endsWith(".png"))
+    // Log ALL files in tmpDir for debugging
+    const allFiles = fs.readdirSync(tmpDir);
+    console.log(`[convert] All files in tmpDir:`, allFiles);
+
+    // Collect PNGs — exclude the source pptx
+    const pngFiles = allFiles
+      .filter(f => f.toLowerCase().endsWith(".png"))
       .sort((a, b) => {
-        const numA = parseInt(a.match(/(\d+)\.png$/)?.[1] || "1");
-        const numB = parseInt(b.match(/(\d+)\.png$/)?.[1] || "1");
-        return numA - numB;
+        // Extract any number from filename for sorting
+        // Handles: presentation.png, presentation1.png, presentation2.png
+        // Also handles: presentation-1.png, slide1.png, etc.
+        const getNum = (name) => {
+          const m = name.match(/(\d+)/);
+          return m ? parseInt(m[1]) : 0;
+        };
+        return getNum(a) - getNum(b);
       });
 
+    console.log(`[convert] PNG files found:`, pngFiles);
+
     if (pngFiles.length === 0) {
-      throw new Error("No slides were generated. Is LibreOffice installed?");
+      throw new Error("No PNG slides generated. LibreOffice may have failed silently.");
     }
 
-    console.log(`[convert] ${pngFiles.length} slides rendered`);
-
-    // 5. Read each PNG and convert to base64 data URL
+    // Convert each PNG to base64
     const slides = pngFiles.map((file, i) => {
       const filePath = path.join(tmpDir, file);
       const b64 = fs.readFileSync(filePath).toString("base64");
@@ -83,18 +80,18 @@ app.post("/convert", upload.single("file"), async (req, res) => {
       };
     });
 
-    // 6. Clean up temp files
+    // Cleanup
     fs.rmSync(tmpDir, { recursive: true, force: true });
     fs.unlinkSync(pptxPath);
 
-    console.log(`[convert] Done — returning ${slides.length} slides`);
+    console.log(`[convert] Done — ${slides.length} slides returned`);
     res.json({ slides });
 
   } catch (err) {
     console.error("[convert] Error:", err.message);
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
     try { fs.unlinkSync(pptxPath); } catch (_) {}
-    res.status(500).json({ error: err.message || "Conversion failed" });
+    res.status(500).json({ error: err.message });
   }
 });
 
